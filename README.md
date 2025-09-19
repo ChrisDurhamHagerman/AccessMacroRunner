@@ -1,3 +1,4 @@
+#AccessMacroRunner
 AccessMacroRunner is a small Windows console app (Framework 4.8) that your automation calls to do “desktop-style” work you can’t do directly in the web API. It opens your Access database, runs the required macro(s), exports data, and (when requested) builds Excel reports and emails them. It ships with Excel libraries (ClosedXML/OpenXML) so it can generate .xlsx files without needing Excel installed.
 
 How it’s used in the bigger flow

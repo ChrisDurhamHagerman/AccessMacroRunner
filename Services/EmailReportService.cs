@@ -1,13 +1,13 @@
 ﻿using ClosedXML.Excel;
 using Microsoft.Office.Interop.Access;
 using System;
+using System.Configuration;
 using System.Data;
 using System.Data.OleDb;
 using System.IO;
 using System.Linq;
 using System.Net.Mail;
 using System.Runtime.InteropServices;
-
 
 namespace AccessMacroRunner.Services
 {
@@ -16,19 +16,20 @@ namespace AccessMacroRunner.Services
         private static readonly string _dbPath = @"C:\ADSK-Automation\Autodesk Transaction Process.accdb";
         private static readonly string _logPath = @"C:\ADSK-Automation\Logs\EmailReportLog.txt";
         private static readonly string _outputDir = @"C:\ADSK-Automation\EmailReports";
+        private static readonly EmailSettings _emailSettings = EmailSettings.Load();
 
         public static void Run()
         {
             try
             {
-                if (Directory.Exists(_outputDir))
+                EnsureDirectory(Path.GetDirectoryName(_logPath));
+                EnsureDirectory(_outputDir);
+
+                // Clean output dir
+                foreach (var file in Directory.GetFiles(_outputDir))
                 {
-                    foreach (var file in Directory.GetFiles(_outputDir))
-                        File.Delete(file);
-                }
-                else
-                {
-                    Directory.CreateDirectory(_outputDir);
+                    try { File.Delete(file); }
+                    catch { /* ignore */ }
                 }
 
                 SendReport(
@@ -49,32 +50,11 @@ namespace AccessMacroRunner.Services
                     cc: new[] { "DavidHagerman@hagerman.com", "ChrisDurham@hagerman.com" }
                 );
 
-                //SendReport(
-                //    queryName: "Qry-NBE RA Orders",
-                //    subject: "TEST Autodesk NBE RAs",
-                //    body: "TEST Here is a list of RAs from Autodesk.",
-                //    fileNameBase: "NBE RA Orders",
-                //    to: new[] { "ChrisDurham@hagerman.com" },
-                //    cc: Array.Empty<string>()
-                //);
-
-                //SendReport(
-                //    queryName: "Qry-NBE Orders without Quotes",
-                //    subject: "TEST Autodesk NBE Orders without Quotes.",
-                //    body: "TEST Here is a list of Autodesk NBE Orders without Quotes.",
-                //    fileNameBase: "NBE Orders without Quote",
-                //    to: new[] { "ChrisDurham@hagerman.com" },
-                //    cc: Array.Empty<string>()
-                //);
-
                 RunVerificationMacro();
             }
             catch (Exception ex)
             {
-                File.AppendAllText(
-                    _logPath,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm} - ❌ Fatal Error: {ex.Message}{Environment.NewLine}"
-                );
+                AppendLog(_logPath, "Fatal Error: " + ex);
             }
         }
 
@@ -88,73 +68,71 @@ namespace AccessMacroRunner.Services
         {
             try
             {
-                string query = $"SELECT * FROM [{queryName}]";
+                string query = "SELECT * FROM [" + queryName + "]";
                 string timestamp = DateTime.Now.ToString("M-d-yy");
-                string filePath = Path.Combine(_outputDir, $"{fileNameBase} {timestamp}.xlsx");
+                string filePath = Path.Combine(_outputDir, fileNameBase + " " + timestamp + ".xlsx");
 
                 ExportQueryToExcel(query, filePath);
                 SendEmail(subject, body, filePath, to, cc);
 
-                File.AppendAllText(
-                    _logPath,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm} - ✅ {subject} sent to {string.Join(",", to)}{Environment.NewLine}"
-                );
+                AppendLog(_logPath, subject + " sent to " + string.Join(",", to));
             }
             catch (Exception ex)
             {
-                File.AppendAllText(
-                  _logPath,
-                  $"{DateTime.Now:yyyy-MM-dd HH:mm} ❌ Error generating '{subject}': {ex}{Environment.NewLine}"
-                );
+                AppendLog(_logPath, "Error generating '" + subject + "': " + ex);
             }
-
         }
 
         private static void ExportQueryToExcel(string query, string filePath)
         {
-            using var connection = new OleDbConnection($@"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={_dbPath};Persist Security Info=False;");
-            using var command = new OleDbCommand(query, connection);
-            var table = new DataTable();
+            string connStr = @"Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + _dbPath + ";Persist Security Info=False;";
 
-            connection.Open();
-            using var adapter = new OleDbDataAdapter(command);
-            adapter.Fill(table);
-
-            using var workbook = new XLWorkbook();
-            var ws = workbook.Worksheets.Add("Results");
-
-            // 1) Write headers:
-            for (int c = 0; c < table.Columns.Count; c++)
-                ws.Cell(1, c + 1).SetValue(table.Columns[c].ColumnName);
-
-            var headerRow = ws.Row(1);
-            headerRow.Style.Font.Bold = false;
-            headerRow.Style.Fill.PatternType = XLFillPatternValues.Solid;
-            headerRow.Style.Fill.BackgroundColor =
-                XLColor.FromTheme(XLThemeColor.Background1, -0.25);
-            ws.Columns(1, table.Columns.Count).AdjustToContents(1, 1);
-
-            // 2) Write data rows:
-            for (int r = 0; r < table.Rows.Count; r++)
+            using (var connection = new OleDbConnection(connStr))
+            using (var command = new OleDbCommand(query, connection))
+            using (var adapter = new OleDbDataAdapter(command))
             {
-                var row = table.Rows[r];
-                for (int c = 0; c < table.Columns.Count; c++)
+                var table = new DataTable();
+                connection.Open();
+                adapter.Fill(table);
+
+                using (var workbook = new XLWorkbook())
                 {
-                    var obj = row[c];
-                    var text = obj == DBNull.Value ? "" : obj.ToString();
-                    ws.Cell(r + 2, c + 1).SetValue(text);
+                    var ws = workbook.Worksheets.Add("Results");
+
+                    // Headers
+                    for (int c = 0; c < table.Columns.Count; c++)
+                        ws.Cell(1, c + 1).SetValue(table.Columns[c].ColumnName);
+
+                    var headerRow = ws.Row(1);
+                    headerRow.Style.Font.Bold = false;
+                    headerRow.Style.Fill.PatternType = XLFillPatternValues.Solid;
+                    headerRow.Style.Fill.BackgroundColor = XLColor.FromTheme(XLThemeColor.Background1, -0.25);
+                    ws.Columns(1, table.Columns.Count).AdjustToContents(1, 1);
+
+                    // Data rows
+                    for (int r = 0; r < table.Rows.Count; r++)
+                    {
+                        var row = table.Rows[r];
+                        for (int c = 0; c < table.Columns.Count; c++)
+                        {
+                            var obj = row[c];
+                            var text = obj == DBNull.Value ? "" : obj.ToString();
+                            ws.Cell(r + 2, c + 1).SetValue(text);
+                        }
+                    }
+
+                    var used = ws.RangeUsed();
+                    if (used != null)
+                    {
+                        used.Style.Alignment.WrapText = true;
+                        used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                        used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+                    }
+
+                    workbook.SaveAs(filePath);
                 }
             }
-
-            var used = ws.RangeUsed();
-            used.Style.Alignment.WrapText = true;
-            used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-            used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-
-            workbook.SaveAs(filePath);
         }
-
-
 
         private static void SendEmail(
             string subject,
@@ -163,66 +141,164 @@ namespace AccessMacroRunner.Services
             string[] to,
             string[] cc)
         {
-            using var smtp = new SmtpClient("d250495a.ess.barracudanetworks.com", 587)
-            {
-                EnableSsl = false,
-                DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false
-            };
-
-            using var mail = new MailMessage
-            {
-                From = new MailAddress("no-reply@hagerman.com", "Hagerman & Company"),
-                Subject = subject,
-                Body = bodyText,
-                IsBodyHtml = false
-            };
-
-            foreach (var addr in to)
-                mail.To.Add(addr);
-            foreach (var addr in cc)
-                mail.CC.Add(addr);
-
-            mail.Attachments.Add(new System.Net.Mail.Attachment(attachmentPath));
-
             if (!File.Exists(attachmentPath))
                 throw new FileNotFoundException("Attachment not found", attachmentPath);
 
-            smtp.Send(mail);
+            var finalTo = to ?? Array.Empty<string>();
+            var finalCc = cc ?? Array.Empty<string>();
+            var finalSubject = subject;
+            var finalBody = bodyText;
+
+            if (_emailSettings.DebugMode)
+            {
+                var originalTo = string.Join(", ", finalTo);
+                var originalCc = string.Join(", ", finalCc);
+
+                finalTo = new[] { _emailSettings.DebugRecipient };
+                finalCc = Array.Empty<string>();
+                finalSubject = "[DEBUG] " + subject;
+                finalBody = bodyText
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + "Debug mode is enabled. Original To: " + originalTo
+                    + Environment.NewLine
+                    + "Original CC: " + originalCc;
+
+                AppendLog(_logPath, "Email debug mode enabled. Redirecting '" + subject + "' to " + _emailSettings.DebugRecipient + ".");
+            }
+
+            using (var smtp = new SmtpClient(_emailSettings.SmtpHost, _emailSettings.SmtpPort)
+            {
+                EnableSsl = _emailSettings.EnableSsl,
+                DeliveryMethod = SmtpDeliveryMethod.Network,
+                UseDefaultCredentials = false
+            })
+            using (var mail = new MailMessage())
+            {
+                mail.From = new MailAddress(_emailSettings.FromAddress, _emailSettings.FromDisplayName);
+                mail.Subject = finalSubject;
+                mail.Body = finalBody;
+                mail.IsBodyHtml = false;
+
+                foreach (var addr in finalTo.Where(IsValidAddress)) mail.To.Add(addr);
+                foreach (var addr in finalCc.Where(IsValidAddress)) mail.CC.Add(addr);
+
+                mail.Attachments.Add(new System.Net.Mail.Attachment(attachmentPath));
+
+                smtp.Send(mail);
+            }
         }
 
         private static void RunVerificationMacro()
         {
-            var macroLogFile = Path.Combine(
-                Path.GetDirectoryName(_logPath)!,
-                "AccessMacroVerification.txt"
-            );
+            string logDir = Path.GetDirectoryName(_logPath);
+            if (string.IsNullOrWhiteSpace(logDir))
+                logDir = @"C:\ADSK-Automation\Logs";
+
+            EnsureDirectory(logDir);
+
+            var macroLogFile = Path.Combine(logDir, "AccessMacroVerification.txt");
+
+            Application accessApp = null;
             try
             {
-                File.AppendAllText(
-                    macroLogFile,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm} - 🔄 Running verification macro on database: {_dbPath}{Environment.NewLine}"
-                );
-                var accessApp = new Application();
-                accessApp.OpenCurrentDatabase(_dbPath);
-                accessApp.DoCmd.RunMacro("Run Process AFTER VERIFICATION");
-                accessApp.CloseCurrentDatabase();
-                accessApp.Quit();
-                Marshal.ReleaseComObject(accessApp);
+                AppendLog(macroLogFile, "Running verification macro on database: " + _dbPath);
 
-                File.AppendAllText(
-                    macroLogFile,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm} - ✅ Verification macro completed successfully.{Environment.NewLine}"
-                );
+                accessApp = new Application();
+                accessApp.OpenCurrentDatabase(_dbPath, false);
+                accessApp.DoCmd.RunMacro("Run Process AFTER VERIFICATION");
+
+                AppendLog(macroLogFile, "Verification macro completed successfully.");
             }
             catch (Exception ex)
             {
-                File.AppendAllText(
-                    macroLogFile,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm} - ❌ Error running verification macro: {ex.Message}{Environment.NewLine}"
-                );
+                AppendLog(macroLogFile, "Error running verification macro: " + ex.Message);
+            }
+            finally
+            {
+                try
+                {
+                    if (accessApp != null)
+                    {
+                        try { accessApp.CloseCurrentDatabase(); } catch { }
+                        try { accessApp.Quit(); } catch { }
+                        try { Marshal.FinalReleaseComObject(accessApp); } catch { }
+                        accessApp = null;
+                    }
+                }
+                catch { /* ignore */ }
+
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
         }
 
+        private static void EnsureDirectory(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+        }
+
+        private static void AppendLog(string filePath, string message)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(filePath);
+                EnsureDirectory(dir);
+                File.AppendAllText(filePath, DateTime.Now.ToString("yyyy-MM-dd HH:mm") + " - " + message + Environment.NewLine);
+            }
+            catch
+            {
+                // swallow logging errors
+            }
+        }
+
+        private static bool IsValidAddress(string address)
+        {
+            return !string.IsNullOrWhiteSpace(address);
+        }
+
+        private sealed class EmailSettings
+        {
+            public bool DebugMode { get; private set; }
+            public string DebugRecipient { get; private set; }
+            public string SmtpHost { get; private set; }
+            public int SmtpPort { get; private set; }
+            public bool EnableSsl { get; private set; }
+            public string FromAddress { get; private set; }
+            public string FromDisplayName { get; private set; }
+
+            public static EmailSettings Load()
+            {
+                return new EmailSettings
+                {
+                    DebugMode = GetBool("EmailDebugMode", false),
+                    DebugRecipient = GetString("EmailDebugRecipient", "chrisdurham@hagerman.com"),
+                    SmtpHost = GetString("SmtpHost", "d250495a.ess.barracudanetworks.com"),
+                    SmtpPort = GetInt("SmtpPort", 587),
+                    EnableSsl = GetBool("SmtpEnableSsl", false),
+                    FromAddress = GetString("MailFromAddress", "no-reply@hagerman.com"),
+                    FromDisplayName = GetString("MailFromDisplayName", "Hagerman & Company")
+                };
+            }
+
+            private static string GetString(string key, string defaultValue)
+            {
+                var value = ConfigurationManager.AppSettings[key];
+                return string.IsNullOrWhiteSpace(value) ? defaultValue : value.Trim();
+            }
+
+            private static bool GetBool(string key, bool defaultValue)
+            {
+                var value = ConfigurationManager.AppSettings[key];
+                return bool.TryParse(value, out var result) ? result : defaultValue;
+            }
+
+            private static int GetInt(string key, int defaultValue)
+            {
+                var value = ConfigurationManager.AppSettings[key];
+                return int.TryParse(value, out var result) ? result : defaultValue;
+            }
+        }
     }
 }

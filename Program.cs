@@ -1,187 +1,300 @@
-﻿using AccessMacroRunner.Services;  // <-- your EmailReportService namespace 
+﻿using AccessMacroRunner.Services; // EmailReportService namespace
 using Microsoft.Office.Interop.Access;
 using System;
-using System.Data;
-using System.Data.OleDb;
+using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace AccessMacroRunner
 {
-    class Program
+    internal class Program
     {
-        static void Main(string[] args)
+        // ===== Paths / config =====
+        private static readonly string DatabasePath = @"C:\ADSK-Automation\Autodesk Transaction Process.accdb";
+        private static readonly string LogFolder = @"C:\ADSK-Automation\Logs";
+
+        private static readonly string ExportFilePath = Path.Combine(LogFolder, "NetsuiteImportData.csv");
+        private static readonly string OldImportFolder = Path.Combine(LogFolder, "Old Imports");
+
+        private static readonly string ExportLogFile = Path.Combine(LogFolder, "ExportAccessIssues.txt");
+        private static readonly string MacroLogFile = Path.Combine(LogFolder, "AccessMacroIssues.txt");
+
+        private const string MacroName = "Run Process";
+        private const string ExportSourceName = "Netsuite Import Data"; // table or saved query name
+
+        // Global mutex prevents overlapping runs (common cause of double exports / file locks)
+        private const string MutexName = @"Global\AccessMacroRunner";
+
+        private static int Main(string[] args)
         {
-            if (args.Length > 0 &&
-                args[0].Equals("emailreports", StringComparison.OrdinalIgnoreCase))
+            string runId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            int pid = Process.GetCurrentProcess().Id;
+
+            SafeEnsureDir(LogFolder);
+
+            using var mutex = new Mutex(initiallyOwned: true, name: MutexName, out bool isNew);
+            if (!isNew)
             {
-                EmailReportService.Run();
-                return;
+                Log(MacroLogFile, runId, pid, "Another instance is already running. Exiting.");
+                return 10;
             }
-
-            RunMacroAndExport();
-        }
-
-        private static void RunMacroAndExport()
-        {
-            string databasePath = @"C:\ADSK-Automation\Autodesk Transaction Process.accdb";
-            string logFolder = @"C:\ADSK-Automation\Logs";
-            string exportFilePath = Path.Combine(logFolder, "NetsuiteImportData.csv");
-            string oldImportFolder = Path.Combine(logFolder, "Old Imports");
-            string exportLogFile = Path.Combine(logFolder, "ExportAccessIssues.txt");
-            string macroLogFile = Path.Combine(logFolder, "AccessMacroIssues.txt");
-            string macroName = "Run Process";
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-
-            string connStr = $@"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={databasePath};Persist Security Info=False;";
-            Application accessApp = null;
 
             try
             {
-                Log(exportLogFile, "🚀 Starting RunMacroAndExport");
+                Log(MacroLogFile, runId, pid, $"Start. Args={(args == null ? "null" : string.Join(" ", args))}");
 
-                Directory.CreateDirectory(logFolder);
-                Log(macroLogFile, $"🔄 Launching Access DB: {databasePath}");
-
-                accessApp = new Application();
-                accessApp.OpenCurrentDatabase(databasePath);
-                accessApp.DoCmd.RunMacro(macroName);
-                Log(macroLogFile, $"✅ Macro '{macroName}' executed.");
-
-                // Move old file if it exists
-                Log(exportLogFile, $"🔍 Checking for existing export file: {exportFilePath}");
-                if (File.Exists(exportFilePath))
+                if (args != null && args.Length > 0 &&
+                    args[0].Equals("emailreports", StringComparison.OrdinalIgnoreCase))
                 {
-                    Log(exportLogFile, $"📁 Old export file exists, preparing to move...");
-                    Directory.CreateDirectory(oldImportFolder);
-
-                    string archivedPath = Path.Combine(oldImportFolder, $"NetsuiteImportData_{timestamp}.csv");
-                    Log(exportLogFile, $"📦 Moving file to archive: {archivedPath}");
-
-                    try
-                    {
-                        File.Move(exportFilePath, archivedPath);
-                        Log(exportLogFile, $"✅ Moved old export to: {archivedPath}");
-                    }
-                    catch (Exception moveEx)
-                    {
-                        Log(exportLogFile, $"❌ Failed to move old export: {moveEx.Message}");
-                        if (moveEx.InnerException != null)
-                            Log(exportLogFile, $"   ⤷ Inner: {moveEx.InnerException.Message}");
-                    }
-                }
-                else
-                {
-                    Log(exportLogFile, $"ℹ️ No previous export file found.");
+                    Log(MacroLogFile, runId, pid, "Mode=emailreports. Handing off to EmailReportService.");
+                    EmailReportService.Run();
+                    Log(MacroLogFile, runId, pid, "EmailReportService complete.");
+                    return 0;
                 }
 
-                // Export Access table to CSV
-                Log(exportLogFile, $"🔄 Connecting to Access DB to export new CSV...");
-
-                using (var connection = new OleDbConnection(connStr))
+                if (args != null && args.Length > 0 &&
+                    args[0].Equals("twoqtrs", StringComparison.OrdinalIgnoreCase))
                 {
-                    connection.Open();
-                    Log(exportLogFile, $"✅ Access DB connection opened.");
-
-                    // Log column names
-                    try
-                    {
-                        using (var schemaCmd = new OleDbCommand("SELECT * FROM [Netsuite Import Data]", connection))
-                        using (var reader = schemaCmd.ExecuteReader(CommandBehavior.SchemaOnly))
-                        {
-                            var schemaTable = reader.GetSchemaTable();
-                            if (schemaTable != null)
-                            {
-                                var columns = schemaTable.Rows.Cast<DataRow>()
-                                    .Select(row => row["ColumnName"].ToString())
-                                    .ToArray();
-
-                                Log(exportLogFile, $"📋 Export columns: {string.Join(", ", columns)}");
-                            }
-                            else
-                            {
-                                Log(exportLogFile, "⚠️ Schema table was null.");
-                            }
-                        }
-                    }
-                    catch (Exception schemaEx)
-                    {
-                        Log(exportLogFile, $"❌ Failed to read schema: {schemaEx.Message}");
-                    }
-
-                    // Execute export query
-                    string exportQuery = $@"
-            SELECT * 
-            INTO [Text;FMT=Delimited;HDR=Yes;Database={logFolder};].[NetsuiteImportData.csv] 
-            FROM [Netsuite Import Data]";
-
-                    Log(exportLogFile, $"📤 Running export query:\n{exportQuery}");
-
-                    try
-                    {
-                        using (var command = new OleDbCommand(exportQuery, connection))
-                        {
-                            command.ExecuteNonQuery();
-                            Log(exportLogFile, $"✅ Exported Access table to: {exportFilePath}");
-                        }
-                    }
-                    catch (Exception exportEx)
-                    {
-                        Log(exportLogFile, $"❌ Export failed: {exportEx.Message}");
-                    }
+                    Log(MacroLogFile, runId, pid, "Mode=twoqtrs. Handing off to TwoQuarterAutomationService.");
+                    TwoQuarterAutomationService.Run();
+                    Log(MacroLogFile, runId, pid, "TwoQuarterAutomationService complete.");
+                    return 0;
                 }
 
-                CleanCsvOfMidnight(exportFilePath, exportLogFile);
+                RunMacroAndExport(runId, pid);
+                Log(MacroLogFile, runId, pid, "Complete.");
+                return 0;
             }
             catch (Exception ex)
             {
-                Log(macroLogFile, $"❌ ERROR: {ex.Message}");
-                if (ex.InnerException != null)
-                    Log(macroLogFile, $"   ⤷ Inner: {ex.InnerException.Message}");
+                Log(MacroLogFile, runId, pid, $"FATAL: {ex}");
+                return 1;
+            }
+        }
+
+        private static void RunMacroAndExport(string runId, int pid)
+        {
+            if (!File.Exists(DatabasePath))
+                throw new FileNotFoundException("Access database not found.", DatabasePath);
+
+            SafeEnsureDir(LogFolder);
+            SafeEnsureDir(OldImportFolder);
+
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+
+            // 1) Archive old export first (fail fast if we can't)
+            ArchiveIfExists(ExportFilePath, OldImportFolder, timestamp, ExportLogFile, runId, pid);
+
+            // 2) Open Access, run macro, export using Access engine (TransferText)
+            Application accessApp = null;
+            try
+            {
+                Log(MacroLogFile, runId, pid, $"Opening Access DB: {DatabasePath}");
+                accessApp = new Application();
+                accessApp.OpenCurrentDatabase(DatabasePath, false);
+
+                Log(MacroLogFile, runId, pid, $"Running macro: {MacroName}");
+                accessApp.DoCmd.RunMacro(MacroName);
+                Log(MacroLogFile, runId, pid, $"Macro executed: {MacroName}");
+
+                Log(ExportLogFile, runId, pid, $"Exporting '{ExportSourceName}' -> {ExportFilePath}");
+                ExportTableOrQueryToCsv_AccessCom(accessApp, ExportSourceName, ExportFilePath, ExportLogFile, runId, pid);
+
+                // 3) Clean midnight timestamps
+                CleanCsvOfMidnight(ExportFilePath, ExportLogFile, runId, pid);
             }
             finally
             {
+                SafeCloseAccess(ref accessApp, MacroLogFile, runId, pid);
+            }
+        }
+
+        /// <summary>
+        /// Export via Access COM (DoCmd.TransferText). More reliable than OleDb Text driver SELECT INTO.
+        /// </summary>
+        private static void ExportTableOrQueryToCsv_AccessCom(
+            Application accessApp,
+            string tableOrQueryName,
+            string exportFilePath,
+            string logFile,
+            string runId,
+            int pid)
+        {
+            try
+            {
+                // If something already exists (shouldn't, because we archive first), remove it to avoid prompt/overwrite issues.
+                if (File.Exists(exportFilePath))
+                {
+                    File.Delete(exportFilePath);
+                    Log(logFile, runId, pid, $"Deleted existing export to allow new write: {exportFilePath}");
+                }
+
+                accessApp.DoCmd.TransferText(
+                    AcTextTransferType.acExportDelim,
+                    Type.Missing,         // export spec (none)
+                    tableOrQueryName,     // table/query name
+                    exportFilePath,       // output path
+                    true                  // include headers
+                );
+
+                if (!File.Exists(exportFilePath))
+                    throw new IOException($"Expected export file not found after export: {exportFilePath}");
+
+                long len = new FileInfo(exportFilePath).Length;
+                Log(logFile, runId, pid, $"Exported '{tableOrQueryName}' ({len:n0} bytes).");
+            }
+            catch (Exception ex)
+            {
+                Log(logFile, runId, pid, $"ERROR exporting '{tableOrQueryName}': {ex.Message}");
+                if (ex.InnerException != null)
+                    Log(logFile, runId, pid, $"Inner: {ex.InnerException.Message}");
+                throw;
+            }
+        }
+
+        private static void ArchiveIfExists(
+            string exportFilePath,
+            string archiveFolder,
+            string timestamp,
+            string logFile,
+            string runId,
+            int pid)
+        {
+            if (!File.Exists(exportFilePath))
+            {
+                Log(logFile, runId, pid, "No previous export found to archive.");
+                return;
+            }
+
+            SafeEnsureDir(archiveFolder);
+
+            string archivedPath = Path.Combine(
+                archiveFolder,
+                $"{Path.GetFileNameWithoutExtension(exportFilePath)}_{timestamp}{Path.GetExtension(exportFilePath)}"
+            );
+
+            try
+            {
+                File.Move(exportFilePath, archivedPath);
+                Log(logFile, runId, pid, $"Archived previous export to: {archivedPath}");
+            }
+            catch (IOException)
+            {
+                // Fallback if file system refuses atomic move (e.g., cross-volume or transient locks)
                 try
                 {
-                    accessApp?.CloseCurrentDatabase();
-                    accessApp?.Quit();
-                    if (accessApp != null)
-                    {
-                        Marshal.ReleaseComObject(accessApp);
-                        accessApp = null;
-                    }
+                    File.Copy(exportFilePath, archivedPath, overwrite: true);
+                    File.Delete(exportFilePath);
+                    Log(logFile, runId, pid, $"Archived previous export to: {archivedPath} (copy/delete fallback)");
                 }
                 catch (Exception ex)
                 {
-                    Log(macroLogFile, $"⚠️ Cleanup Error: {ex.Message}");
+                    Log(logFile, runId, pid, $"ERROR archiving previous export: {ex.Message}");
+                    if (ex.InnerException != null)
+                        Log(logFile, runId, pid, $"Inner: {ex.InnerException.Message}");
+                    throw;
+                }
+            }
+        }
+
+        private static void CleanCsvOfMidnight(string path, string logFile, string runId, int pid)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    Log(logFile, runId, pid, $"CSV not found for cleaning: {path}");
+                    return;
                 }
 
+                // Only remove midnight time components; keep other times intact
+                string text = File.ReadAllText(path, Encoding.UTF8);
+
+                // Examples:
+                // "11/17/2025 0:00:00"  -> "11/17/2025"
+                // "11/17/2025 00:00:00" -> "11/17/2025"
+                text = Regex.Replace(text, @"\s0{1,2}:00:00\b", "");
+
+                File.WriteAllText(path, text, Encoding.UTF8);
+                Log(logFile, runId, pid, "Cleaned CSV of midnight timestamps.");
+            }
+            catch (Exception ex)
+            {
+                Log(logFile, runId, pid, $"ERROR scrubbing CSV: {ex.Message}");
+                if (ex.InnerException != null)
+                    Log(logFile, runId, pid, $"Inner: {ex.InnerException.Message}");
+                // do not throw; cleaning is non-fatal
+            }
+        }
+
+        private static void SafeCloseAccess(ref Application accessApp, string logFile, string runId, int pid)
+        {
+            try
+            {
+                if (accessApp == null) return;
+
+                try { accessApp.CloseCurrentDatabase(); } catch { }
+                try { accessApp.Quit(); } catch { }
+
+                try
+                {
+                    Marshal.FinalReleaseComObject(accessApp);
+                }
+                catch
+                {
+                    // If FinalRelease fails for some reason, fall back (best-effort)
+                    try { Marshal.ReleaseComObject(accessApp); } catch { }
+                }
+
+                accessApp = null;
+            }
+            catch (Exception ex)
+            {
+                Log(logFile, runId, pid, $"Cleanup error: {ex.Message}");
+                if (ex.InnerException != null)
+                    Log(logFile, runId, pid, $"Inner: {ex.InnerException.Message}");
+            }
+            finally
+            {
+                // Ensure COM is fully collected
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
             }
         }
 
-
-        static void CleanCsvOfMidnight(string path, string log)
+        private static void SafeEnsureDir(string path)
         {
+            if (string.IsNullOrWhiteSpace(path)) return;
             try
             {
-                var lines = File.ReadAllLines(path);
-                for (int i = 0; i < lines.Length; i++)
-                    lines[i] = lines[i].Replace(" 0:00:00", "");
-                File.WriteAllLines(path, lines);
-                Log(log, $"🧼 Cleaned CSV of ' 0:00:00'.");
+                if (!Directory.Exists(path))
+                    Directory.CreateDirectory(path);
             }
-            catch (Exception ex)
+            catch
             {
-                Log(log, $"❌ Error scrubbing CSV: {ex.Message}");
+                // swallow; caller logs elsewhere
             }
         }
 
-        static void Log(string file, string message)
+        private static void Log(string file, string runId, int pid, string message)
         {
-            File.AppendAllText(file, $"{DateTime.Now:yyyy-MM-dd HH:mm} - {message}{Environment.NewLine}");
+            try
+            {
+                SafeEnsureDir(Path.GetDirectoryName(file) ?? ".");
+                File.AppendAllText(
+                    file,
+                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - RunId={runId} PID={pid} - {message}{Environment.NewLine}"
+                );
+            }
+            catch
+            {
+                // swallow logging errors
+            }
         }
     }
 }

@@ -121,6 +121,7 @@
     <None Include="AccessMacroRunner_TemporaryKey.pfx" />
     <None Include="App.config" />
     <None Include="packages.config" />
+    <None Include="Properties\PublishProfiles\ServerRelease.pubxml" />
   </ItemGroup>
   <ItemGroup>
     <COMReference Include="Microsoft.Office.Interop.Access1">
@@ -146,4 +147,9 @@
     </BootstrapperPackage>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup Condition="'$(PublishProfile)' != ''">
+    <AccessMacroRunnerPublishProfile Condition="Exists('$(MSBuildProjectDirectory)\Properties\PublishProfiles\$(PublishProfile).pubxml')">$(MSBuildProjectDirectory)\Properties\PublishProfiles\$(PublishProfile).pubxml</AccessMacroRunnerPublishProfile>
+    <AccessMacroRunnerPublishProfile Condition="'$(AccessMacroRunnerPublishProfile)' == '' And Exists('$(PublishProfile)')">$(PublishProfile)</AccessMacroRunnerPublishProfile>
+  </PropertyGroup>
+  <Import Project="$(AccessMacroRunnerPublishProfile)" Condition="'$(AccessMacroRunnerPublishProfile)' != ''" />
 </Project>

@@ -19,7 +19,12 @@ namespace AccessMacroRunner.Services
         private const string ReportQueryName = "Qry-Autodesk Orders without NS Matches";
         private const string EmailSubject = "Autodesk Orders with no Matching NS Orders";
         private const string EmailBody = "Here is a list of Autodesk Orders without NS Matches.";
-        private const string Recipient = "chrisdurham@hagerman.com";
+        private const string PrimaryRecipient = "DanHarshman@hagerman.com";
+        private static readonly string[] CcRecipients =
+        {
+            "ShellyAffeldt@hagerman.com",
+            "ChrisDurham@hagerman.com"
+        };
 
         private static readonly string DatabasePath = @"C:\ADSK-Automation\Autodesk Transaction Process.accdb";
         private static readonly string ImportFilePath = @"C:\ADSK-Automation\2Qtrs\JMHAutodeskSalesOrders2QtrsAllSyncResults.csv";
@@ -306,7 +311,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
             using (var message = new MailMessage())
             {
                 message.From = new MailAddress(settings.FromAddress, settings.FromDisplayName);
-                message.To.Add(Recipient);
+                message.To.Add(PrimaryRecipient);
+                foreach (string ccRecipient in CcRecipients)
+                    message.CC.Add(ccRecipient);
                 message.Subject = EmailSubject;
                 message.Body = EmailBody;
                 message.IsBodyHtml = false;
@@ -314,7 +321,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 smtp.Send(message);
             }
 
-            Log("Email sent to " + Recipient + " with attachment " + attachmentPath + ".");
+            Log(
+                "Email sent to " + PrimaryRecipient
+                + " (CC: " + string.Join(", ", CcRecipients) + ")"
+                + " with attachment " + attachmentPath + ".");
         }
 
         private static void EnsureDirectory(string path)

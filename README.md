@@ -12,5 +12,8 @@ From a Visual Studio Developer PowerShell prompt, run:
 msbuild AccessMacroRunner.csproj /t:Publish /p:PublishProfile=ServerRelease
 ```
 
-Visual Studio can also select `ServerRelease` from the Publish page. The account
-running Visual Studio must have access to the server's administrative share.
+Because this is a classic .NET Framework project, Visual Studio's **Publish**
+command opens the ClickOnce wizard. Do not use that wizard for the server
+deployment; run the command above from a Visual Studio Developer PowerShell
+prompt instead. The account running the command must have access to the server's
+administrative share.

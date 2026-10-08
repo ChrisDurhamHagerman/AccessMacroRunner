@@ -64,6 +64,15 @@ namespace AccessMacroRunner
                     return 0;
                 }
 
+                if (args != null && args.Length > 0 &&
+                    args[0].Equals("retention", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log(MacroLogFile, runId, pid, "Mode=retention. Handing off to RetentionService.");
+                    RetentionService.Run();
+                    Log(MacroLogFile, runId, pid, "RetentionService complete.");
+                    return 0;
+                }
+
                 RunMacroAndExport(runId, pid);
                 Log(MacroLogFile, runId, pid, "Complete.");
                 return 0;
@@ -86,7 +95,11 @@ namespace AccessMacroRunner
             var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
 
             // 1) Archive old export first (fail fast if we can't)
-            ArchiveIfExists(ExportFilePath, OldImportFolder, timestamp, ExportLogFile, runId, pid);
+            string datedArchiveFolder = Path.Combine(
+                OldImportFolder,
+                DateTime.Now.ToString("yyyy"),
+                DateTime.Now.ToString("MM"));
+            ArchiveIfExists(ExportFilePath, datedArchiveFolder, timestamp, ExportLogFile, runId, pid);
 
             // 2) Open Access, run macro, export using Access engine (TransferText)
             Application accessApp = null;

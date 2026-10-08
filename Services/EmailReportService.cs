@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Mail;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace AccessMacroRunner.Services
 {
@@ -17,6 +18,12 @@ namespace AccessMacroRunner.Services
         private static readonly string _logPath = @"C:\ADSK-Automation\Logs\EmailReportLog.txt";
         private static readonly string _outputDir = @"C:\ADSK-Automation\EmailReports";
         private static readonly EmailSettings _emailSettings = EmailSettings.Load();
+        private static readonly TimeSpan[] _emailRetryDelays =
+        {
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromMinutes(5)
+        };
 
         public static void Run()
         {
@@ -24,13 +31,6 @@ namespace AccessMacroRunner.Services
             {
                 EnsureDirectory(Path.GetDirectoryName(_logPath));
                 EnsureDirectory(_outputDir);
-
-                // Clean output dir
-                foreach (var file in Directory.GetFiles(_outputDir))
-                {
-                    try { File.Delete(file); }
-                    catch { /* ignore */ }
-                }
 
                 SendReport(
                     queryName: "Qry-NBE RA Orders",
@@ -66,20 +66,31 @@ namespace AccessMacroRunner.Services
             string[] to,
             string[] cc)
         {
+            DateTime runTime = DateTime.Now;
+            string reportFolder = Path.Combine(_outputDir, runTime.ToString("yyyy"), runTime.ToString("MM"));
+            EnsureDirectory(reportFolder);
+            string timestamp = runTime.ToString("yyyy-MM-dd_HHmmss");
+            string filePath = Path.Combine(reportFolder, fileNameBase + " " + timestamp + ".xlsx");
+
             try
             {
                 string query = "SELECT * FROM [" + queryName + "]";
-                string timestamp = DateTime.Now.ToString("M-d-yy");
-                string filePath = Path.Combine(_outputDir, fileNameBase + " " + timestamp + ".xlsx");
-
                 ExportQueryToExcel(query, filePath);
-                SendEmail(subject, body, filePath, to, cc);
-
-                AppendLog(_logPath, subject + " sent to " + string.Join(",", to));
             }
             catch (Exception ex)
             {
                 AppendLog(_logPath, "Error generating '" + subject + "': " + ex);
+                return;
+            }
+
+            try
+            {
+                SendEmail(subject, body, filePath, to, cc);
+                AppendLog(_logPath, subject + " sent to " + string.Join(",", to));
+            }
+            catch (Exception ex)
+            {
+                AppendLog(_logPath, "Error sending '" + subject + "': " + ex);
             }
         }
 
@@ -167,6 +178,48 @@ namespace AccessMacroRunner.Services
                 AppendLog(_logPath, "Email debug mode enabled. Redirecting '" + subject + "' to " + _emailSettings.DebugRecipient + ".");
             }
 
+            int totalAttempts = _emailRetryDelays.Length + 1;
+
+            for (int attempt = 1; attempt <= totalAttempts; attempt++)
+            {
+                try
+                {
+                    SendEmailOnce(finalSubject, finalBody, attachmentPath, finalTo, finalCc);
+
+                    if (attempt > 1)
+                    {
+                        AppendLog(_logPath, "Email send for '" + subject
+                            + "' succeeded on attempt " + attempt + " of " + totalAttempts + ".");
+                    }
+
+                    return;
+                }
+                catch (SmtpException ex) when (attempt < totalAttempts && IsTransientSmtpFailure(ex))
+                {
+                    TimeSpan delay = _emailRetryDelays[attempt - 1];
+                    AppendLog(_logPath, "Email send attempt " + attempt + " of " + totalAttempts
+                        + " for '" + subject + "' failed with a transient SMTP error ("
+                        + ex.StatusCode + "): " + ex.Message + " Retrying in "
+                        + FormatDelay(delay) + ".");
+                    Thread.Sleep(delay);
+                }
+                catch (SmtpException ex)
+                {
+                    AppendLog(_logPath, "Email send attempt " + attempt + " of " + totalAttempts
+                        + " for '" + subject + "' failed and will not be retried ("
+                        + ex.StatusCode + "): " + ex.Message);
+                    throw;
+                }
+            }
+        }
+
+        private static void SendEmailOnce(
+            string subject,
+            string bodyText,
+            string attachmentPath,
+            string[] to,
+            string[] cc)
+        {
             using (var smtp = new SmtpClient(_emailSettings.SmtpHost, _emailSettings.SmtpPort)
             {
                 EnableSsl = _emailSettings.EnableSsl,
@@ -176,17 +229,31 @@ namespace AccessMacroRunner.Services
             using (var mail = new MailMessage())
             {
                 mail.From = new MailAddress(_emailSettings.FromAddress, _emailSettings.FromDisplayName);
-                mail.Subject = finalSubject;
-                mail.Body = finalBody;
+                mail.Subject = subject;
+                mail.Body = bodyText;
                 mail.IsBodyHtml = false;
 
-                foreach (var addr in finalTo.Where(IsValidAddress)) mail.To.Add(addr);
-                foreach (var addr in finalCc.Where(IsValidAddress)) mail.CC.Add(addr);
+                foreach (var addr in to.Where(IsValidAddress)) mail.To.Add(addr);
+                foreach (var addr in cc.Where(IsValidAddress)) mail.CC.Add(addr);
 
                 mail.Attachments.Add(new System.Net.Mail.Attachment(attachmentPath));
-
                 smtp.Send(mail);
             }
+        }
+
+        private static bool IsTransientSmtpFailure(SmtpException ex)
+        {
+            int statusCode = (int)ex.StatusCode;
+            return ex.StatusCode == SmtpStatusCode.GeneralFailure
+                || (statusCode >= 400 && statusCode <= 499);
+        }
+
+        private static string FormatDelay(TimeSpan delay)
+        {
+            if (delay.TotalMinutes >= 1)
+                return delay.TotalMinutes.ToString("0") + " minute(s)";
+
+            return delay.TotalSeconds.ToString("0") + " second(s)";
         }
 
         private static void RunVerificationMacro()

@@ -33,6 +33,7 @@ namespace AccessMacroRunner.Services
 
         public static void Run()
         {
+            DateTime runTime = DateTime.Now;
             EnsureDirectory(Path.GetDirectoryName(LogPath));
             EnsureDirectory(OutputFolder);
 
@@ -46,17 +47,45 @@ namespace AccessMacroRunner.Services
 
             int importedRows = ImportCsvToAccess(ImportFilePath);
             Log("Imported " + importedRows + " rows into SuiteTalk_Autodesk_Sales_Orders_2QTRS_ALL.");
+            ArchiveSuccessfulInput(ImportFilePath, runTime);
 
             RunAccessMacro();
 
+            string reportFolder = Path.Combine(OutputFolder, runTime.ToString("yyyy"), runTime.ToString("MM"));
+            EnsureDirectory(reportFolder);
             string reportPath = Path.Combine(
-                OutputFolder,
-                "Autodesk Orders Without NS Matches " + DateTime.Now.ToString("MM-dd-yy") + ".xlsx");
+                reportFolder,
+                "Autodesk Orders Without NS Matches " + runTime.ToString("yyyy-MM-dd_HHmmss") + ".xlsx");
 
             ExportReport(reportPath);
             SendEmail(reportPath);
 
             Log("Two-quarter Autodesk order automation completed successfully.");
+        }
+
+        private static void ArchiveSuccessfulInput(string sourcePath, DateTime runTime)
+        {
+            try
+            {
+                string archiveFolder = Path.Combine(
+                    Path.GetDirectoryName(sourcePath),
+                    "Archive",
+                    runTime.ToString("yyyy"),
+                    runTime.ToString("MM"));
+                EnsureDirectory(archiveFolder);
+
+                string archivePath = Path.Combine(
+                    archiveFolder,
+                    Path.GetFileNameWithoutExtension(sourcePath) + "_" + runTime.ToString("yyyy-MM-dd_HH-mm-ss")
+                    + Path.GetExtension(sourcePath));
+                File.Copy(sourcePath, archivePath, false);
+                Log("Archived successful two-quarter input to " + archivePath + ".");
+            }
+            catch (Exception ex)
+            {
+                // Archiving is valuable, but must not turn a successful import into a failed business run.
+                Log("WARNING: Could not archive successful two-quarter input: " + ex.Message);
+            }
         }
 
         private static int ImportCsvToAccess(string csvFilePath)

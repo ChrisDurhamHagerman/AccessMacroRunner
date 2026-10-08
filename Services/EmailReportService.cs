@@ -25,14 +25,14 @@ namespace AccessMacroRunner.Services
             TimeSpan.FromMinutes(5)
         };
 
-        public static void Run()
+        public static bool Run()
         {
             try
             {
                 EnsureDirectory(Path.GetDirectoryName(_logPath));
                 EnsureDirectory(_outputDir);
 
-                SendReport(
+                bool reportsSucceeded = SendReport(
                     queryName: "Qry-NBE RA Orders",
                     subject: "Autodesk NBE RAs",
                     body: "Here is a list of RAs from Autodesk.",
@@ -41,7 +41,7 @@ namespace AccessMacroRunner.Services
                     cc: new[] { "DavidHagerman@hagerman.com", "ChrisDurham@hagerman.com" }
                 );
 
-                SendReport(
+                reportsSucceeded &= SendReport(
                     queryName: "Qry-NBE Orders without Quotes",
                     subject: "Autodesk NBE Orders without Quotes.",
                     body: "Here is a list of Autodesk NBE Orders without Quotes.",
@@ -50,15 +50,17 @@ namespace AccessMacroRunner.Services
                     cc: new[] { "DavidHagerman@hagerman.com", "ChrisDurham@hagerman.com" }
                 );
 
-                RunVerificationMacro();
+                bool verificationSucceeded = RunVerificationMacro();
+                return reportsSucceeded && verificationSucceeded;
             }
             catch (Exception ex)
             {
                 AppendLog(_logPath, "Fatal Error: " + ex);
+                return false;
             }
         }
 
-        private static void SendReport(
+        private static bool SendReport(
             string queryName,
             string subject,
             string body,
@@ -80,17 +82,19 @@ namespace AccessMacroRunner.Services
             catch (Exception ex)
             {
                 AppendLog(_logPath, "Error generating '" + subject + "': " + ex);
-                return;
+                return false;
             }
 
             try
             {
                 SendEmail(subject, body, filePath, to, cc);
                 AppendLog(_logPath, subject + " sent to " + string.Join(",", to));
+                return true;
             }
             catch (Exception ex)
             {
                 AppendLog(_logPath, "Error sending '" + subject + "': " + ex);
+                return false;
             }
         }
 
@@ -256,7 +260,7 @@ namespace AccessMacroRunner.Services
             return delay.TotalSeconds.ToString("0") + " second(s)";
         }
 
-        private static void RunVerificationMacro()
+        private static bool RunVerificationMacro()
         {
             string logDir = Path.GetDirectoryName(_logPath);
             if (string.IsNullOrWhiteSpace(logDir))
@@ -267,6 +271,7 @@ namespace AccessMacroRunner.Services
             var macroLogFile = Path.Combine(logDir, "AccessMacroVerification.txt");
 
             Application accessApp = null;
+            bool succeeded = false;
             try
             {
                 AppendLog(macroLogFile, "Running verification macro on database: " + _dbPath);
@@ -276,6 +281,7 @@ namespace AccessMacroRunner.Services
                 accessApp.DoCmd.RunMacro("Run Process AFTER VERIFICATION");
 
                 AppendLog(macroLogFile, "Verification macro completed successfully.");
+                succeeded = true;
             }
             catch (Exception ex)
             {
@@ -298,6 +304,8 @@ namespace AccessMacroRunner.Services
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
             }
+
+            return succeeded;
         }
 
         private static void EnsureDirectory(string path)

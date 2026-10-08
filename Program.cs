@@ -50,16 +50,18 @@ namespace AccessMacroRunner
                     args[0].Equals("emailreports", StringComparison.OrdinalIgnoreCase))
                 {
                     Log(MacroLogFile, runId, pid, "Mode=emailreports. Handing off to EmailReportService.");
-                    EmailReportService.Run();
-                    Log(MacroLogFile, runId, pid, "EmailReportService complete.");
-                    return 0;
+                    bool succeeded = EmailReportService.Run();
+                    Log(MacroLogFile, runId, pid, succeeded
+                        ? "EmailReportService complete."
+                        : "EmailReportService completed with one or more failures.");
+                    return succeeded ? 0 : 1;
                 }
 
                 if (args != null && args.Length > 0 &&
                     args[0].Equals("twoqtrs", StringComparison.OrdinalIgnoreCase))
                 {
                     Log(MacroLogFile, runId, pid, "Mode=twoqtrs. Handing off to TwoQuarterAutomationService.");
-                    TwoQuarterAutomationService.Run();
+                    TwoQuarterAutomationService.Run(args.Length > 1 ? args[1] : null);
                     Log(MacroLogFile, runId, pid, "TwoQuarterAutomationService complete.");
                     return 0;
                 }

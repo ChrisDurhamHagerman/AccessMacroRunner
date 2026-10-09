@@ -27,12 +27,13 @@ namespace AccessMacroRunner.Services
         };
 
         private static readonly string DatabasePath = @"C:\ADSK-Automation\Autodesk Transaction Process.accdb";
-        private static readonly string ImportFilePath = @"C:\ADSK-Automation\2Qtrs\JMHAutodeskSalesOrders2QtrsAllSyncResults.csv";
+        private static readonly string DefaultImportFilePath = @"C:\ADSK-Automation\2Qtrs\JMHAutodeskSalesOrders2QtrsAllSyncResults.csv";
         private static readonly string OutputFolder = @"C:\ADSK-Automation\EmailReports";
         private static readonly string LogPath = @"C:\ADSK-Automation\Logs\TwoQuarterAutomationLog.txt";
 
-        public static void Run()
+        public static void Run(string importFilePath = null)
         {
+            importFilePath = string.IsNullOrWhiteSpace(importFilePath) ? DefaultImportFilePath : importFilePath;
             DateTime runTime = DateTime.Now;
             EnsureDirectory(Path.GetDirectoryName(LogPath));
             EnsureDirectory(OutputFolder);
@@ -42,12 +43,12 @@ namespace AccessMacroRunner.Services
             if (!File.Exists(DatabasePath))
                 throw new FileNotFoundException("Access database not found.", DatabasePath);
 
-            if (!File.Exists(ImportFilePath))
-                throw new FileNotFoundException("Two-quarter NetSuite CSV not found.", ImportFilePath);
+            if (!File.Exists(importFilePath))
+                throw new FileNotFoundException("Two-quarter NetSuite CSV not found.", importFilePath);
 
-            int importedRows = ImportCsvToAccess(ImportFilePath);
+            int importedRows = ImportCsvToAccess(importFilePath);
             Log("Imported " + importedRows + " rows into SuiteTalk_Autodesk_Sales_Orders_2QTRS_ALL.");
-            ArchiveSuccessfulInput(ImportFilePath, runTime);
+            ArchiveSuccessfulInput(importFilePath, runTime);
 
             RunAccessMacro();
 
@@ -78,7 +79,7 @@ namespace AccessMacroRunner.Services
                     archiveFolder,
                     Path.GetFileNameWithoutExtension(sourcePath) + "_" + runTime.ToString("yyyy-MM-dd_HH-mm-ss")
                     + Path.GetExtension(sourcePath));
-                File.Copy(sourcePath, archivePath, false);
+                File.Move(sourcePath, archivePath);
                 Log("Archived successful two-quarter input to " + archivePath + ".");
             }
             catch (Exception ex)
